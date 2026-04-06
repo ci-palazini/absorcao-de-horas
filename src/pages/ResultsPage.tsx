@@ -303,57 +303,33 @@ export function ResultsPage() {
         const map: Record<string, string> = {}
         const THRESHOLD = 10
 
+        if (viewType === 'producao' || !refDate) {
+            for (const d of dayList) map[d] = d
+            return map
+        }
+
+        // MODO CONTABILIDADE: Qualquer dia < 10h mescla no anterior visível
+        // IMPORTANTE: Não mesclar dias futuros (além de refDate)
+        const refD = dayjs(refDate)
+        let lastVisibleDay: string | null = null
+
         for (const d of dayList) {
             const dayD = dayjs(d)
-            const wd = dayD.day()
+            const isFuture = dayD.isAfter(refD, 'day')
+            const total = totalRealByDay[d] ?? 0
 
-            // Default: map to itself
-            if (!map[d]) map[d] = d
-
-            if (viewType === 'producao') {
-                // Produção: sem merges complexos, apenas verificar se tem produção para exibir (logica filtered depois)
-                // Mantemos identidade
-                continue
-            }
-
-            // CONTABILIDADE Logic
-            if (wd === 5) { // Sexta
-                // Olhar Sábado seguinte
-                const sat = ymd(dayD.add(1, 'day'))
-                if (dayList.includes(sat)) {
-                    const satTotal = totalRealByDay[sat] ?? 0
-
-                    if (satTotal < THRESHOLD) {
-                        // Sábado < 9h -> Merge na Sexta
-                        map[sat] = d
-
-                        // Validar Domingo também
-                        const sun = ymd(dayD.add(2, 'day'))
-                        if (dayList.includes(sun)) {
-                            // Se Sábado foi mergeado, Domingo TAMBÉM vai para Sexta (User Rule Case 4)
-                            map[sun] = d
-                        }
-                    } else {
-                        // Sábado >= 9h -> Sábado fica separado (map[sat] já é sat)
-
-                        // Checar Domingo agora
-                        const sun = ymd(dayD.add(2, 'day'))
-                        if (dayList.includes(sun)) {
-                            const sunTotal = totalRealByDay[sun] ?? 0
-                            if (sunTotal < THRESHOLD) {
-                                // Domingo < 9h -> Merge no Sábado
-                                map[sun] = sat
-                            } else {
-                                // Domingo >= 9h -> Domingo separado
-                                map[sun] = sun
-                            }
-                        }
-                    }
-                }
+            if (!isFuture && total < THRESHOLD && lastVisibleDay) {
+                // Mescla no anterior
+                map[d] = lastVisibleDay
+            } else {
+                // Dia visível
+                map[d] = d
+                if (!isFuture) lastVisibleDay = d
+                else lastVisibleDay = null // Para de considerar dias futuros como alvos de mesclagem
             }
         }
         return map
-    }, [dayList, totalRealByDay, viewType])
+    }, [dayList, totalRealByDay, viewType, refDate])
 
     // Data de referência efetiva
     const effectiveRefDate = useMemo(() => {
@@ -433,7 +409,10 @@ export function ResultsPage() {
 
                     for (const m of machines) {
                         if (!m.is_active) continue
-                        meta += Number(effectiveTargetByMachineDay[m.id]?.[src] ?? 0)
+                        // NÃO acumular meta: semente somar se for o próprio dia visível (cabeça do bloco)
+                        if (src === d) {
+                            meta += Number(effectiveTargetByMachineDay[m.id]?.[src] ?? 0)
+                        }
                         real += Number(realByMachineDay[m.id]?.[src] ?? 0)
                     }
                 }
@@ -489,7 +468,10 @@ export function ResultsPage() {
             let dayTarget = 0
             let dayReal = 0
             for (const src of relevantSourceDaysForDay) {
-                dayTarget += Number(effectiveTargetByMachineDay[mid]?.[src] ?? 0)
+                // Meta APENAS do dia que é o header do agrupamento
+                if (src === activeDay) {
+                    dayTarget += Number(effectiveTargetByMachineDay[mid]?.[src] ?? 0)
+                }
                 dayReal += Number(realByMachineDay[mid]?.[src] ?? 0)
             }
 
@@ -497,7 +479,10 @@ export function ResultsPage() {
             let accTarget = 0
             let accReal = 0
             for (const src of relevantSourceDaysForAcc) {
-                accTarget += Number(effectiveTargetByMachineDay[mid]?.[src] ?? 0)
+                // Meta APENAS se o dia for uma "cabeça" visível (dayMergeMap[src] === src)
+                if (dayMergeMap[src] === src) {
+                    accTarget += Number(effectiveTargetByMachineDay[mid]?.[src] ?? 0)
+                }
                 accReal += Number(realByMachineDay[mid]?.[src] ?? 0)
             }
 
@@ -586,7 +571,7 @@ export function ResultsPage() {
     }), [dailyTrack])
 
     // Label adicional se houver merge
-    const saturdayMergedInfo = useMemo(() => {
+    const mergedDaysInfo = useMemo(() => {
         if (!refDate || !dayMergeMap) return null
         // Check if effectiveRefDate (which is what we show) includes other days
         const target = dayMergeMap[refDate] ?? refDate
@@ -742,7 +727,7 @@ export function ResultsPage() {
                     </div>
                     <p className="page-subtitle mt-1">
                         Dados até <strong>{displayRefDate ? fmtDayBR(displayRefDate) : '—'}</strong>
-                        {saturdayMergedInfo && <span style={{ color: '#ea580c', marginLeft: '8px', fontSize: '12px' }}>{saturdayMergedInfo}</span>}
+                        {mergedDaysInfo && <span style={{ color: '#ea580c', marginLeft: '8px', fontSize: '12px' }}>{mergedDaysInfo}</span>}
                     </p>
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
@@ -856,7 +841,7 @@ export function ResultsPage() {
                             </div>
                             <div style={{ fontSize: '14px', opacity: 0.7, marginTop: '6px' }}>
                                 Referência: <strong style={{ color: '#93c5fd' }}>{displayRefDate ? fmtDayBR(displayRefDate) : '—'}</strong>
-                                {saturdayMergedInfo && <span style={{ color: '#fbbf24', marginLeft: '8px' }}>{saturdayMergedInfo}</span>}
+                                {mergedDaysInfo && <span style={{ color: '#fbbf24', marginLeft: '8px' }}>{mergedDaysInfo}</span>}
                                 {' • '}Gerado: {dayjs().format('DD/MM/YYYY HH:mm')}
                             </div>
                         </div>
