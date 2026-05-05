@@ -116,9 +116,17 @@ export function ResultsPage() {
     const [selectedMachine, setSelectedMachine] = useState<MachineRow | null>(null)
     const [hiddenDays, setHiddenDays] = useState<string[]>([])
 
+    // Âncora do mês anterior: último dia do batch anterior (para merge cross-month)
+    const [prevAnchorDay, setPrevAnchorDay] = useState<string | null>(null)
+    const [prevAnchorHours, setPrevAnchorHours] = useState<(DailyHourRow & { batch_id: string })[]>([])
+    const [prevAnchorBatchIds, setPrevAnchorBatchIds] = useState<string[]>([])
+
     async function load(targetMonth?: string | null) {
         setBusy(true)
         setErr(null)
+        setPrevAnchorDay(null)
+        setPrevAnchorHours([])
+        setPrevAnchorBatchIds([])
         try {
             // Determinar o mês a ser buscado
             let yearMonth: string
@@ -177,12 +185,14 @@ export function ResultsPage() {
             setSelectedDay(null) // Reset day selection when loading new month
             setHiddenDays([])
 
-            // Buscar dados consolidados de TODOS os batches do mês
-            const [allMachines, monthDaily, tDef, td] = await Promise.all([
+            // Buscar dados consolidados de TODOS os batches do mês + batches do mês anterior (para âncora)
+            const prevYearMonth = ymd(dayjs(yearMonth).subtract(1, 'month').startOf('month'))
+            const [allMachines, monthDaily, tDef, td, prevBatches] = await Promise.all([
                 fetchMachinesAll(),
                 fetchDailyHoursForMonth(yearMonth, ymd(ms), ymd(me)),
                 fetchTargetsDefaults(ymd(ms)),
                 fetchTargetsDaily(ymd(ms), ymd(me)),
+                fetchAllReadyBatchesForMonth(prevYearMonth),
             ])
 
             setMachines(allMachines)
@@ -195,6 +205,18 @@ export function ResultsPage() {
                 tdMap[r.machine_id][r.day] = Number(r.target_hours ?? 0)
             }
             setTargetsDaily(tdMap)
+
+            // Buscar âncora do mês anterior: último ref_date do mês anterior
+            if (prevBatches.length) {
+                const prevRefDates = prevBatches.map(b => b.ref_date).filter(Boolean) as string[]
+                const prevAnchor = prevRefDates.sort().pop() ?? null
+                if (prevAnchor) {
+                    const prevHours = await fetchDailyHoursForMonth(prevYearMonth, prevAnchor, prevAnchor)
+                    setPrevAnchorDay(prevAnchor)
+                    setPrevAnchorHours(prevHours)
+                    setPrevAnchorBatchIds(prevBatches.map(b => b.id))
+                }
+            }
         } catch (e: any) {
             setErr(e?.message ?? 'Falha ao carregar resultados.')
         } finally {
@@ -241,13 +263,13 @@ export function ResultsPage() {
 
     const realByMachineDay = useMemo(() => {
         const map: Record<string, Record<string, number>> = {}
-        for (const r of dailyRows) {
+        for (const r of [...dailyRows, ...prevAnchorHours]) {
             const mid = r.machine.id
             map[mid] ||= {}
             map[mid][r.prod_day] = (map[mid][r.prod_day] ?? 0) + Number(r.hours ?? 0)
         }
         return map
-    }, [dailyRows])
+    }, [dailyRows, prevAnchorHours])
 
     const defaultsMap = useMemo(() => {
         const map: Record<string, number> = {}
@@ -285,7 +307,8 @@ export function ResultsPage() {
     // Total Real consolidado por dia (soma de todas as máquinas) para decisão de merge
     const totalRealByDay = useMemo(() => {
         const map: Record<string, number> = {}
-        for (const d of dayList) {
+        const allDays = prevAnchorDay ? [prevAnchorDay, ...dayList] : dayList
+        for (const d of allDays) {
             let sum = 0
             for (const m of machines) {
                 if (!m.is_active) continue
@@ -294,7 +317,7 @@ export function ResultsPage() {
             map[d] = sum
         }
         return map
-    }, [dayList, machines, realByMachineDay])
+    }, [dayList, machines, realByMachineDay, prevAnchorDay])
 
     // Mapa de visibilidade e merges
     // Key: dia original. Value: dia de destino (onde será exibido).
@@ -310,10 +333,12 @@ export function ResultsPage() {
 
         // MODO CONTABILIDADE: Qualquer dia < 10h mescla no anterior visível
         // IMPORTANTE: Não mesclar dias futuros (além de refDate)
+        // O âncora do mês anterior inicializa lastVisibleDay para permitir merge cross-month
         const refD = dayjs(refDate)
         let lastVisibleDay: string | null = null
+        const iterList = prevAnchorDay ? [prevAnchorDay, ...dayList] : dayList
 
-        for (const d of dayList) {
+        for (const d of iterList) {
             const dayD = dayjs(d)
             const isFuture = dayD.isAfter(refD, 'day')
             const total = totalRealByDay[d] ?? 0
@@ -329,7 +354,7 @@ export function ResultsPage() {
             }
         }
         return map
-    }, [dayList, totalRealByDay, viewType, refDate])
+    }, [dayList, totalRealByDay, viewType, refDate, prevAnchorDay])
 
     // Data de referência efetiva
     const effectiveRefDate = useMemo(() => {
@@ -341,8 +366,19 @@ export function ResultsPage() {
     const modalDays = useMemo(() => {
         const raw = selectedDay ?? refDate ?? ''
         const target = dayMergeMap[raw] ?? raw
-        return dayList.filter(d => dayMergeMap[d] === target)
-    }, [selectedDay, refDate, dayMergeMap, dayList])
+        const allDays = prevAnchorDay ? [prevAnchorDay, ...dayList] : dayList
+        return allDays.filter(d => dayMergeMap[d] === target)
+    }, [selectedDay, refDate, dayMergeMap, dayList, prevAnchorDay])
+
+    // Quando o dia âncora está selecionado, incluir batch IDs do mês anterior no modal
+    const modalBatchIds = useMemo(() => {
+        const raw = selectedDay ?? refDate ?? ''
+        const target = dayMergeMap[raw] ?? raw
+        if (target === prevAnchorDay && prevAnchorBatchIds.length > 0) {
+            return [...batchIds, ...prevAnchorBatchIds]
+        }
+        return batchIds
+    }, [selectedDay, refDate, dayMergeMap, prevAnchorDay, batchIds, prevAnchorBatchIds])
 
     const modalDayDesc = useMemo(() => {
         const raw = selectedDay ?? refDate ?? ''
@@ -373,7 +409,7 @@ export function ResultsPage() {
                     real += Number(realByMachineDay[m.id]?.[d] ?? 0)
                 }
                 const wd = dayjs(d).day()
-                return { day: d, meta: round2(meta), real: round2(real), delta: round2(real - meta), isSaturday: wd === 6, isSunday: wd === 0 }
+                return { day: d, meta: round2(meta), real: round2(real), delta: round2(real - meta), isSaturday: wd === 6, isSunday: wd === 0, isAnchor: false }
             })
         } else {
             // MODO CONTABILIDADE COM MERGE DINÂMICO
