@@ -370,15 +370,6 @@ export function ResultsPage() {
         return allDays.filter(d => dayMergeMap[d] === target)
     }, [selectedDay, refDate, dayMergeMap, dayList, prevAnchorDay])
 
-    // Quando o dia âncora está selecionado, incluir batch IDs do mês anterior no modal
-    const modalBatchIds = useMemo(() => {
-        const raw = selectedDay ?? refDate ?? ''
-        const target = dayMergeMap[raw] ?? raw
-        if (target === prevAnchorDay && prevAnchorBatchIds.length > 0) {
-            return [...batchIds, ...prevAnchorBatchIds]
-        }
-        return batchIds
-    }, [selectedDay, refDate, dayMergeMap, prevAnchorDay, batchIds, prevAnchorBatchIds])
 
     const modalDayDesc = useMemo(() => {
         const raw = selectedDay ?? refDate ?? ''
