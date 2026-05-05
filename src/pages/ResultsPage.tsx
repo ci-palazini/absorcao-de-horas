@@ -413,39 +413,40 @@ export function ResultsPage() {
             })
         } else {
             // MODO CONTABILIDADE COM MERGE DINÂMICO
-            // 1. Identificar dias visíveis (target == key)
-            const visibleDays = dayList.filter(d => {
-                // Filtra futuro em relação a refDate
-                // Se um dia futuro foi mergeado em um passado visível, ele entra na soma do passado? Sim.
-                // Mas aqui listamos as COLUNAS. A coluna ReferenceDate deve ser visível?
-                // Se refDate for um dia merged (ex: Sab mergeado), effectiveRefDate é Sexta.
-                // Então paramos de listar em effectiveRefDate.
+            const effRef = dayMergeMap[refDate] ?? refDate
 
-                if (dayMergeMap[d] !== d) return false // É um dia mergeado, não gera coluna
-
-                // Se for depois da data de corte, não mostra (mas cuidado com merges parciais, assumimos corte limpo por 'batch')
-                // Usamos effectiveRefDate para limitar
-                const effRef = dayMergeMap[refDate]
-                return isSameOrBeforeDay(dayjs(d), dayjs(effRef))
-            })
+            // Colunas visíveis: inclui âncora do mês anterior se algum dia do mês atual foi mesclado nela
+            const visibleDays: string[] = []
+            if (prevAnchorDay && dayList.some(d => dayMergeMap[d] === prevAnchorDay)) {
+                visibleDays.push(prevAnchorDay)
+            }
+            for (const d of dayList) {
+                if (dayMergeMap[d] !== d) continue
+                if (!isSameOrBeforeDay(dayjs(d), dayjs(effRef))) continue
+                visibleDays.push(d)
+            }
 
             return visibleDays.map(d => {
-                // Para cada dia visível, somar ele mesmo e todos que mapeiam para ele
-                const mergedSourceDays = dayList.filter(src => dayMergeMap[src] === d)
+                const isAnchorCol = d === prevAnchorDay
+                // Coluna âncora: inclui o próprio dia âncora (prod do mês anterior) + dias do mês atual mesclados nele
+                // Coluna regular: inclui apenas os dias do mês atual que mapeiam para ela
+                const mergedSourceDays: string[] = [
+                    ...(isAnchorCol ? [prevAnchorDay] : []),
+                    ...dayList.filter(src => dayMergeMap[src] === d),
+                ]
 
                 let meta = 0, real = 0
                 let hasSat = false
                 let hasSun = false
 
                 for (const src of mergedSourceDays) {
-                    // Só soma se estiver dentro do range total permitido (logicamente deve estar se dayList vem de monthStart->monthEnd)
                     const wd = dayjs(src).day()
                     if (wd === 6) hasSat = true
                     if (wd === 0) hasSun = true
 
                     for (const m of machines) {
                         if (!m.is_active) continue
-                        // NÃO acumular meta: semente somar se for o próprio dia visível (cabeça do bloco)
+                        // Meta: apenas da cabeça do bloco (âncora tem meta=0 pois é do mês anterior)
                         if (src === d) {
                             meta += Number(effectiveTargetByMachineDay[m.id]?.[src] ?? 0)
                         }
@@ -458,13 +459,13 @@ export function ResultsPage() {
                     meta: round2(meta),
                     real: round2(real),
                     delta: round2(real - meta),
-                    isSaturday: hasSat && d === dayjs(d).day(6).format('YYYY-MM-DD'), // Só marca flag se o próprio dia for sabado e visivel? Ou se contem sabado? Visualmente melhor marcar se for dia atipico.
-                    // Ajuste visual: Se d é Sexta e contem sabado, mostra normal. Se d é Sabado, mostra flag Sab.
-                    isSunday: hasSun && d === dayjs(d).day(0).format('YYYY-MM-DD')
+                    isSaturday: hasSat && d === dayjs(d).day(6).format('YYYY-MM-DD'),
+                    isSunday: hasSun && d === dayjs(d).day(0).format('YYYY-MM-DD'),
+                    isAnchor: isAnchorCol,
                 }
             })
         }
-    }, [dayList, dayHasProduction, effectiveTargetByMachineDay, machines, realByMachineDay, refDate, viewType, dayMergeMap])
+    }, [dayList, dayHasProduction, effectiveTargetByMachineDay, machines, realByMachineDay, refDate, viewType, dayMergeMap, prevAnchorDay])
 
     const visibleDailyTrack = dailyTrack.filter(d => !hiddenDays.includes(d.day))
 
