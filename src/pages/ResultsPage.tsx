@@ -119,14 +119,12 @@ export function ResultsPage() {
     // Âncora do mês anterior: último dia do batch anterior (para merge cross-month)
     const [prevAnchorDay, setPrevAnchorDay] = useState<string | null>(null)
     const [prevAnchorHours, setPrevAnchorHours] = useState<(DailyHourRow & { batch_id: string })[]>([])
-    const [prevAnchorBatchIds, setPrevAnchorBatchIds] = useState<string[]>([])
 
     async function load(targetMonth?: string | null) {
         setBusy(true)
         setErr(null)
         setPrevAnchorDay(null)
         setPrevAnchorHours([])
-        setPrevAnchorBatchIds([])
         try {
             // Determinar o mês a ser buscado
             let yearMonth: string
@@ -214,7 +212,6 @@ export function ResultsPage() {
                     const prevHours = await fetchDailyHoursForMonth(prevYearMonth, prevAnchor, prevAnchor)
                     setPrevAnchorDay(prevAnchor)
                     setPrevAnchorHours(prevHours)
-                    setPrevAnchorBatchIds(prevBatches.map(b => b.id))
                 }
             }
         } catch (e: any) {
