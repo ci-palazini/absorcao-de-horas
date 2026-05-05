@@ -409,31 +409,21 @@ export function ResultsPage() {
                     real += Number(realByMachineDay[m.id]?.[d] ?? 0)
                 }
                 const wd = dayjs(d).day()
-                return { day: d, meta: round2(meta), real: round2(real), delta: round2(real - meta), isSaturday: wd === 6, isSunday: wd === 0, isAnchor: false }
+                return { day: d, meta: round2(meta), real: round2(real), delta: round2(real - meta), isSaturday: wd === 6, isSunday: wd === 0 }
             })
         } else {
             // MODO CONTABILIDADE COM MERGE DINÂMICO
-            const effRef = dayMergeMap[refDate] ?? refDate
-
-            // Colunas visíveis: inclui âncora do mês anterior se algum dia do mês atual foi mesclado nela
-            const visibleDays: string[] = []
-            if (prevAnchorDay && dayList.some(d => dayMergeMap[d] === prevAnchorDay)) {
-                visibleDays.push(prevAnchorDay)
-            }
-            for (const d of dayList) {
-                if (dayMergeMap[d] !== d) continue
-                if (!isSameOrBeforeDay(dayjs(d), dayjs(effRef))) continue
-                visibleDays.push(d)
-            }
+            // Dias que mapeiam para prevAnchorDay são absorvidos pelo mês anterior e não geram coluna aqui
+            const visibleDays = dayList.filter(d => {
+                if (dayMergeMap[d] !== d) return false
+                const effRef = dayMergeMap[refDate] ?? refDate
+                return isSameOrBeforeDay(dayjs(d), dayjs(effRef))
+            })
 
             return visibleDays.map(d => {
-                const isAnchorCol = d === prevAnchorDay
-                // Coluna âncora: inclui o próprio dia âncora (prod do mês anterior) + dias do mês atual mesclados nele
-                // Coluna regular: inclui apenas os dias do mês atual que mapeiam para ela
-                const mergedSourceDays: string[] = [
-                    ...(isAnchorCol ? [prevAnchorDay] : []),
-                    ...dayList.filter(src => dayMergeMap[src] === d),
-                ]
+                const mergedSourceDays = dayList.filter(src =>
+                    dayMergeMap[src] === d && dayMergeMap[src] !== prevAnchorDay
+                )
 
                 let meta = 0, real = 0
                 let hasSat = false
@@ -446,7 +436,6 @@ export function ResultsPage() {
 
                     for (const m of machines) {
                         if (!m.is_active) continue
-                        // Meta: apenas da cabeça do bloco (âncora tem meta=0 pois é do mês anterior)
                         if (src === d) {
                             meta += Number(effectiveTargetByMachineDay[m.id]?.[src] ?? 0)
                         }
@@ -461,7 +450,6 @@ export function ResultsPage() {
                     delta: round2(real - meta),
                     isSaturday: hasSat && d === dayjs(d).day(6).format('YYYY-MM-DD'),
                     isSunday: hasSun && d === dayjs(d).day(0).format('YYYY-MM-DD'),
-                    isAnchor: isAnchorCol,
                 }
             })
         }
@@ -485,14 +473,17 @@ export function ResultsPage() {
 
         const rows: MachineMetrics[] = []
 
-        // Performance optimization: Pre-calculate relevant source days for accumulators
+        // Dias absorvidos pelo mês anterior (mergeados no prevAnchorDay) não contam nas métricas do mês atual
         const relevantSourceDaysForAcc = dayList.filter(src => {
-            const target = dayMergeMap[src]
+            const target = dayMergeMap[src] ?? src
+            if (prevAnchorDay && target === prevAnchorDay) return false
             return isSameOrBeforeDay(dayjs(target), activeDayD)
         })
 
-        // Identify source days for the specific "Day" column
-        const relevantSourceDaysForDay = dayList.filter(src => dayMergeMap[src] === activeDay)
+        const relevantSourceDaysForDay = dayList.filter(src => {
+            if (prevAnchorDay && dayMergeMap[src] === prevAnchorDay) return false
+            return (dayMergeMap[src] ?? src) === activeDay
+        })
 
         for (const m of machines) {
             if (!m.is_active) continue
@@ -544,7 +535,7 @@ export function ResultsPage() {
             return (a.machine.sort_order ?? 0) - (b.machine.sort_order ?? 0) || a.machine.code.localeCompare(b.machine.code)
         })
         return rows
-    }, [refDate, monthStart, effectiveTargetByMachineDay, realByMachineDay, dayList, machines, viewType, selectedDay, dayMergeMap])
+    }, [refDate, monthStart, effectiveTargetByMachineDay, realByMachineDay, dayList, machines, viewType, selectedDay, dayMergeMap, prevAnchorDay])
 
     const grouped = useMemo(() => {
         const bySector = new Map<string, { sector: MachineRow['sector']; items: MachineMetrics[] }>()
@@ -610,14 +601,14 @@ export function ResultsPage() {
     // Label adicional se houver merge
     const mergedDaysInfo = useMemo(() => {
         if (!refDate || !dayMergeMap) return null
-        // Check if effectiveRefDate (which is what we show) includes other days
         const target = dayMergeMap[refDate] ?? refDate
-        const merged = dayList.filter(d => dayMergeMap[d] === target && d !== target)
+        const allDays = prevAnchorDay ? [prevAnchorDay, ...dayList] : dayList
+        const merged = allDays.filter(d => dayMergeMap[d] === target && d !== target)
         if (merged.length > 0) {
             return `(Inclui: ${merged.map(d => fmtDayBR(d)).join(', ')})`
         }
         return null
-    }, [refDate, dayMergeMap, dayList])
+    }, [refDate, dayMergeMap, dayList, prevAnchorDay])
 
     async function exportResumo() {
         if (!resumoRef.current) return
